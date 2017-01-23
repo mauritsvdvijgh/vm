@@ -9,7 +9,7 @@ build:
 	docker build -t $(NAME):$(VERSION) .
 
 tag_latest:
-	docker tag -f $(NAME):$(VERSION) $(NAME):latest
+	docker tag $(NAME):$(VERSION) $(NAME):latest
 
 clean:
 
