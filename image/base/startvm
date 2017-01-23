@@ -59,9 +59,26 @@ fetch_userdata()
 	return
 }
 
+wait_for_metadata()
+{
+    counter=0
+    printf 'Waiting for metadata'
+    until $(curl --output /dev/null --silent --head --fail http://rancher-metadata/latest/self/container); do
+        printf '.'
+        sleep 1
+        counter=$((counter + 1))
+        if [ "$counter" -gt 30 ]; then
+            echo
+            echo "Could not reach metadata." >&2
+            exit 1
+        fi
+    done
+    echo
+}
+
 generate_cloud_drive()
 {
-	# get metadata and create cloud drive v2 for cloud-init
+    # get metadata and create cloud drive v2 for cloud-init
 	os_metadata=`fetch_os_metadata`
 	if [ ! -f $os_metadata ]
 	then
@@ -277,6 +294,7 @@ EOF
 }
 
 # need to wait until network is ready
+wait_for_metadata
 ISO=`generate_cloud_drive`
 if [[ $ISO ]]
 then
