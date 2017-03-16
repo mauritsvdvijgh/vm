@@ -1,4 +1,4 @@
-SUBDIRS := base rancheros ubuntu centos android-x86
+SUBDIRS := base
 
 .PHONY : all $(SUBDIRS)
 
