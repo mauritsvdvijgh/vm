@@ -7,22 +7,23 @@
 
 # If no arguments, the VM will lauch with 4 cores and 1GB of memory
 
-: ${DEBUG:='N'}
+: ${RANCHER_DEBUG:='false'}
+[[ "${RANCHER_TRACE}" == "true" ]] && set -x
+
 : ${LAUNCHER:='qemu-system-x86_64'}
-: ${DNSMASQ_CONF_DIR:='/etc/dnsmasq.d'}
-: ${DNSMASQ:='/usr/sbin/dnsmasq'}
-: ${QEMU_CONF_DIR:='/etc/qemu-kvm'}
 
 : ${KVM_BLK_OPTS:="-drive if=virtio,file=/image/image"}
+# TODO : ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
+# -device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
 
 : ${KVM_OPTS:="\
-  -nodefaults \
   -device virtio-balloon-pci,id=balloon0 \
   -realtime mlock=off \
   -msg timestamp=on \
   -chardev pty,id=charserial0 \
   -device isa-serial,chardev=charserial0,id=serial0 \
   -serial stdio \
+  -usbdevice tablet \
   "}
 
 : ${KVM_CPU_OPTS:="-m 1024 -smp 4,sockets=4,cores=1,threads=1"}
@@ -33,7 +34,7 @@ log () {
       echo "$1: ${@:2}"
       ;;
     DEBUG)
-      [[ $DEBUG -eq 1 ]] && echo "$1: ${@:2}"
+      [[ "${RANCHER_DEBUG}" == "true" ]] && echo "$1: ${@:2}"
       ;;
     *)
       echo "-- $@"
@@ -99,6 +100,7 @@ cidr2mask() {
   echo $mask
 }
 
+# TODO remov this
 # Generates and returns a new IP and MASK in a superset (inmediate wider range)
 # of the given IP/MASK
 # usage: getNonConflictingIP IP MASK
@@ -135,7 +137,6 @@ generateNetdevNames () {
 }
 
 setupBridge () {
-  set -x
   local iface="$1"
   local mode="$2"
   local deviceID=$(generateNetdevNames $mode)
@@ -147,6 +148,8 @@ setupBridge () {
   else # use macvlan devices by default
     vtapdev="macvtap${deviceID}"
     until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
+      # stdout output of this function is used, so we have to output to stderr
+      # [[ "${RANCHER_DEBUG}" == "true" ]] && echo "Waiting on success ip link add. Output: $OUTPUT" 1>&2
       sleep 1
     done
 
@@ -154,6 +157,7 @@ setupBridge () {
     ip link set $vtapdev up
 
     # create a macvlan device for the host
+    # TODO is this deletable?
     ip link add link $iface name $bridgeName type macvlan mode bridge
     ip link set $bridgeName up
 
@@ -162,7 +166,6 @@ setupBridge () {
     mknod "/dev/$vtapdev" c $major $minor
   fi
 
-  set +x
   # get a new IP for the guest machine in a broader network broadcast domain
   if ! [[ -z $IP ]]; then
     newIP=($(getNonConflictingIP $IP $CIDR))
@@ -175,7 +178,7 @@ setupBridge () {
   echo $deviceID
 }
 
-# Setup macvtap device to connect later the VM and setup a new macvlan devide
+# Setup macvtap device to connect later the VM and setup a new macvlan device
 # to connect the host machine to the network
 configureNetworks () {
   local i=0
@@ -188,7 +191,6 @@ configureNetworks () {
     IPs=$(ip address show dev $iface | grep inet | awk '/inet / { print $2 }' | cut -f1 -d/)
     IPs=($IPs)
     MAC=$(ip link show $iface | awk '/ether/ { print $2 }')
-    log "DEBUG" "Container original MAC address: $MAC"
 
     # If the container has more than one IP configured in a given interface,
     # the user can select which one to use.
@@ -222,8 +224,10 @@ configureNetworks () {
 
     # use container MAC address ($MAC) for tap device
     # and generate a new one for the local interface
+    newMAC=$(genMAC)
+    log "INFO" "Assigning container's original mac address $MAC to VM. Assigning new mac address to container: $newMAC"
     ip link set $iface down
-    ip link set $iface address $(genMAC)
+    ip link set $iface address $newMAC
     ip link set $iface up
 
     deviceID=($(setupBridge $iface "macvlan"))
@@ -232,7 +236,7 @@ configureNetworks () {
     let fd=$i+3
     KVM_NET_OPTS="$KVM_NET_OPTS -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
 
-    log "DEBUG" "bridgeName: $bridgeName"
+    log "INFO" "bridgeName: $bridgeName"
     KVM_NET_OPTS=" -device virtio-net-pci,netdev=net$i,mac=$MAC $KVM_NET_OPTS"
     let i++
 
@@ -241,20 +245,16 @@ configureNetworks () {
 
 # MAIN
 
-#enable KVM support onl if the host supports it
+#enable KVM acceleration if the host supports it
 if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
   log "INFO" "KVM acceleration enabled"
-  KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm,usb=off "
-else
-  log "INFO" "KVM acceleration disabled"
-  KVM_OPTS="$KVM_OPTS -machine usb=off "
+  KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm"
 fi
 
-case "$DEBUG" in
-  [Yy1]* ) DEBUG=1;;
-  [Nn0]* ) DEBUG=0;;
-  *      ) log "ERROR" "DEBUG incorrect or undefined. It must be one of [Yy1Nn0]"; exit 1;;
-esac
+# Interactive debugging mode
+if [ "$1" = "bash" ]; then
+  exec bash
+fi
 
 # Get all interfaces:
 local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
@@ -269,6 +269,14 @@ DEFAULT_ROUTE=$(ip route | grep default | awk '{print $3}')
 
 configureNetworks
 
-log "INFO" "Launching qemu-kvm"
-log "INFO" "Launching $LAUNCHER $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $KVM_ARGS $@ $KVM_NET_OPTS"
-eval exec $LAUNCHER $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS "$@" $KVM_NET_OPTS
+# If /vm does not exist, we still proceed with running KVM. We just
+# won't get a VNC console socket.
+if [ -d /vm ]; then
+    DOCKERID=`cat /proc/self/cgroup | grep docker | awk -F/ '{print $NF}' | cut -f 2 -d - | cut -f 1 -d . | head -1`
+    mkdir -p /vm/$DOCKERID
+    VNC="-vnc unix:/vm/$DOCKERID/vnc"
+    echo VNC server will listen on Unix socket /vm/$DOCKERID/vnc
+fi
+
+log "INFO" "$LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $@ $KVM_NET_OPTS"
+eval exec $LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS "$@" $KVM_NET_OPTS
