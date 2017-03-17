@@ -247,11 +247,6 @@ if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
   KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm"
 fi
 
-# Interactive debugging mode
-if [ "$1" = "bash" ]; then
-  exec bash
-fi
-
 # Get all interfaces:
 local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
 local_bridges=($(brctl show | tail -n +2 | awk '{print $1}'))
