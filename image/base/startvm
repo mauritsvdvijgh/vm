@@ -18,8 +18,6 @@
 
 : ${KVM_OPTS:="\
   -realtime mlock=off \
-  -chardev pty,id=charserial0 \
-  -device isa-serial,chardev=charserial0,id=serial0 \
   -serial stdio \
   -usbdevice tablet \
   "}
