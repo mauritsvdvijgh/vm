@@ -13,8 +13,8 @@
 : ${LAUNCHER:='qemu-system-x86_64'}
 
 : ${KVM_BLK_OPTS:="-drive if=virtio,file=/image/image"}
-# TODO : ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
-# -device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
+#: ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
+#-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
 
 : ${KVM_OPTS:="\
   -realtime mlock=off \
@@ -23,6 +23,9 @@
   "}
 
 : ${KVM_CPU_OPTS:="-m 1024 -smp 4,sockets=4,cores=1,threads=1"}
+
+# Pass Docker command args to kvm
+KVM_ARGS=$@
 
 log () {
   case "$1" in
@@ -269,5 +272,5 @@ if [ -d /vm ]; then
     echo VNC server will listen on Unix socket /vm/$DOCKERID/vnc
 fi
 
-log "INFO" "$LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $@ $KVM_NET_OPTS"
-eval exec $LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS "$@" $KVM_NET_OPTS
+log "INFO" "$LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $KVM_ARGS $KVM_NET_OPTS"
+eval exec $LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $KVM_ARGS $KVM_NET_OPTS
