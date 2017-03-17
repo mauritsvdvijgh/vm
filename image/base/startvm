@@ -17,9 +17,7 @@
 # -device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
 
 : ${KVM_OPTS:="\
-  -device virtio-balloon-pci,id=balloon0 \
   -realtime mlock=off \
-  -msg timestamp=on \
   -chardev pty,id=charserial0 \
   -device isa-serial,chardev=charserial0,id=serial0 \
   -serial stdio \
