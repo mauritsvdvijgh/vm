@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# This entrypoint for KVM container configures and attaches network bridges to
+# This entrypoint for KVM container configures and attaches macvtap devices to
 # the VM and starts KVM with the selected options.
 
 # See Dockerfile reference and README.md for further info.
@@ -13,6 +13,8 @@
 : ${LAUNCHER:='qemu-system-x86_64'}
 
 : ${KVM_BLK_OPTS:="-drive if=virtio,file=/image/image"}
+
+# TODO re-enable this eventally
 #: ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
 #-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
 
@@ -44,7 +46,6 @@ log () {
 # ContainsElement: checks if first parameter is among the array given as second parameter
 # returns 0 if the element is found in the list and 1 if not
 # usage: containsElement $item $list
-
 containsElement () {
   local e
   for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
@@ -80,49 +81,9 @@ itoa() {
   echo $((${1}%256))
 }
 
-cidr2mask() {
-  local i mask=""
-  local full_octets=$(($1/8))
-  local partial_octet=$(($1%8))
-
-  for ((i=0;i<4;i+=1)); do
-    if [ $i -lt $full_octets ]; then
-      mask+=255
-    elif [ $i -eq $full_octets ]; then
-      mask+=$((256 - 2**(8-$partial_octet)))
-    else
-      mask+=0
-    fi
-    test $i -lt 3 && mask+=.
-  done
-
-  echo $mask
-}
-
-# TODO remov this
-# Generates and returns a new IP and MASK in a superset (inmediate wider range)
-# of the given IP/MASK
-# usage: getNonConflictingIP IP MASK
-# returns NEWIP MASK
-getNonConflictingIP () {
-    local IP="$1"
-    local CIDR="$2"
-
-    let "newCIDR=$CIDR-1"
-
-    local i=$(atoi $IP)
-    let "j=$i^(1<<(32-$CIDR))"
-    local newIP=$(itoa j)
-
-    echo $newIP $newCIDR
-}
-
-# generates unused, random names for macvlan or bridge devices
-# usage: generateNetDevNames DEVICETYPE
-#   DEVICETYPE must be either 'macvlan' or 'bridge'
-# returns:
-#   - bridgeXXXXXX if DEVICETYPE is 'bridge'
-#   - macvlanXXXXXX, macvtapXXXXXX if DEVICETYPE is 'macvlan'
+# generates unused, random names for net devices
+# usage: generateNetDevName
+# returns: macvtapXXXXXX
 generateNetdevNames () {
   devicetype=$1
 
@@ -135,50 +96,29 @@ generateNetdevNames () {
   echo "$randomID"
 }
 
-setupBridge () {
+setupMacvtap () {
   local iface="$1"
   local mode="$2"
   local deviceID=$(generateNetdevNames $mode)
-  local bridgeName="$mode$deviceID"
 
-  if [[ $mode == "bridge" ]]; then
-    brctl addbr "$bridgeName"
-    brctl addif "$bridgeName" "$iface"
-  else # use macvlan devices by default
-    vtapdev="macvtap${deviceID}"
-    until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
-      # stdout output of this function is used, so we have to output to stderr
-      # [[ "${RANCHER_DEBUG}" == "true" ]] && echo "Waiting on success ip link add. Output: $OUTPUT" 1>&2
-      sleep 1
-    done
+  vtapdev="macvtap${deviceID}"
+  until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
+    sleep 1
+  done
 
-    ip link set $vtapdev address "$MAC"
-    ip link set $vtapdev up
+  ip link set $vtapdev address "$MAC"
+  ip link set $vtapdev up
 
-    # create a macvlan device for the host
-    # TODO is this deletable?
-    ip link add link $iface name $bridgeName type macvlan mode bridge
-    ip link set $bridgeName up
+  # create dev file (there is no udev in container: need to be done manually)
+  IFS=: read major minor < <(cat /sys/devices/virtual/net/$vtapdev/tap*/dev)
+  mknod "/dev/$vtapdev" c $major $minor
 
-    # create dev file (there is no udev in container: need to be done manually)
-    IFS=: read major minor < <(cat /sys/devices/virtual/net/$vtapdev/tap*/dev)
-    mknod "/dev/$vtapdev" c $major $minor
-  fi
-
-  # get a new IP for the guest machine in a broader network broadcast domain
-  if ! [[ -z $IP ]]; then
-    newIP=($(getNonConflictingIP $IP $CIDR))
-    ip address del "$IP/$CIDR" dev "$iface"
-    ip address add "${newIP[0]}/${newIP[1]}" dev "$bridgeName"
-  fi
-
-  ip link set dev "$bridgeName" up
+  ip address del "$IP/$CIDR" dev "$iface"
 
   echo $deviceID
 }
 
-# Setup macvtap device to connect later the VM and setup a new macvlan device
-# to connect the host machine to the network
+# Setup macvtap device to connect later the VM
 configureNetworks () {
   local i=0
 
@@ -198,7 +138,6 @@ configureNetworks () {
     #
     # If this env variable is not set, the IP to be given to the VM is
     # the first in the list for that interface (default behaviour).
-
     if ! [[ -z "$SELECTED_NETWORK" ]]; then
       local given_ip given_mask
       IFS=/ read given_ip given_mask <<< $SELECTED_NETWORK
@@ -229,16 +168,11 @@ configureNetworks () {
     ip link set $iface address $newMAC
     ip link set $iface up
 
-    deviceID=($(setupBridge $iface "macvlan"))
-    bridgeName="macvlan$deviceID"
-    # kvm configuration:
+    deviceID=($(setupMacvtap $iface))
     let fd=$i+3
-    KVM_NET_OPTS="$KVM_NET_OPTS -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
+    KVM_NET_OPTS="$KVM_NET_OPTS -device virtio-net-pci,netdev=net$i,mac=$MAC -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
 
-    log "INFO" "bridgeName: $bridgeName"
-    KVM_NET_OPTS=" -device virtio-net-pci,netdev=net$i,mac=$MAC $KVM_NET_OPTS"
     let i++
-
   done
 }
 
