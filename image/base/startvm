@@ -12,21 +12,12 @@
 
 : ${LAUNCHER:='qemu-system-x86_64'}
 
+: ${KVM_CPU_OPTS:="-m 512 -smp cpus=1"}
 : ${KVM_BLK_OPTS:="-drive if=virtio,file=/image/image"}
-
 # TODO re-enable this eventally
 #: ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
 #-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
-
-: ${KVM_OPTS:="\
-  -realtime mlock=off \
-  -serial stdio \
-  -usbdevice tablet \
-  "}
-
-: ${KVM_CPU_OPTS:="-m 1024 -smp 4,sockets=4,cores=1,threads=1"}
-
-# Pass Docker command args to kvm
+: ${KVM_OPTS:="-realtime mlock=off -serial stdio -usbdevice tablet"}
 KVM_ARGS=$@
 
 log () {
