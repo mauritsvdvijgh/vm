@@ -13,10 +13,10 @@
 : ${LAUNCHER:='qemu-system-x86_64'}
 
 : ${KVM_CPU_OPTS:="-m 512 -smp cpus=1"}
-: ${KVM_BLK_OPTS:="-drive if=virtio,file=/image/image"}
-# TODO re-enable this eventally
-#: ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
-#-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
+: ${KVM_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=qcow2 \
+-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
+: ${KVM_RAW_BLK_OPTS:="-drive file=\$KVM_IMAGE,if=none,id=drive-disk0,format=raw \
+-device virtio-blk-pci,scsi=off,drive=drive-disk0,id=virtio-disk0,bootindex=1"}
 : ${KVM_OPTS:="-realtime mlock=off -serial stdio -usbdevice tablet"}
 KVM_ARGS=$@
 
@@ -33,6 +33,71 @@ log () {
       ;;
   esac
 }
+
+
+
+# Create the qcow disk image on the Docker volume named /image, using
+# the compressed qcow image that came with Docker image as the base.
+# Docker volumes typically perform better than the file system for
+# Docker images (no need for overlay fs etc.)
+
+if [ -e /dev/vm/root ]; then
+    KVM_BLK_OPTS="$KVM_RAW_BLK_OPTS"
+    KVM_IMAGE=/dev/vm/root
+else
+    if [[ $IMAGE_LOCATION == file://* ]]; then
+        baseImage=${IMAGE_LOCATION/file:\/\//\/images}
+    elif [[ $IMAGE_LOCATION == http* ]]; then
+        if [ -z "$IMAGE_SHA256_DIGEST" ]; then
+            >&2 echo "IMAGE_SHA256_DIGEST environment variable must be set"
+            exit 1
+        fi
+
+        baseImage=$(echo "/images/"$(echo "$IMAGE_LOCATION" | sha256sum | awk '{print $1}'))
+
+        # Touch so that we can get a read-only lock on it
+        if [ ! -e "$baseImage" ]; then
+            touch $baseImage
+        fi
+
+        log "INFO" "Obtaining lock to download image $IMAGE_LOCATION"
+        (
+            flock 200
+            if [ ! -s "$baseImage" ]; then
+                log "INFO" "Downloading $IMAGE_LOCATION"
+
+                tmpFile=$(echo "/tmp/"$(uuidgen))
+                wget $IMAGE_LOCATION -O $tmpFile
+
+                calcedDigest=$(sha256sum $tmpFile | awk '{print $1}')
+                if [ "$IMAGE_SHA256_DIGEST" != "$calcedDigest" ]; then
+                    log "ERROR" "Calculated image digest $calcedDigest does not match provided digest [$IMAGE_SHA256_DIGEST]"
+                    exit 1
+                fi
+                mv $tmpFile $baseImage
+            else
+                log "INFO" "Image $IMAGE_LOCATION already downloaded"
+            fi
+        ) 200<"$baseImage"
+    else
+        log "ERROR" "IMAGE_LOCATION not set properly: [$IMAGE_LOCATION]"
+        exit 1
+    fi
+
+    if [ ! -d "/image" ]; then
+        echo "/image directory does not exist, failed to mount volume /image?"
+        exit 2
+    fi
+
+    KVM_IMAGE=/image/sda.qcow2
+    if [ ! -f "$KVM_IMAGE" ]; then
+        qemu-img create -f qcow2 -b $baseImage $KVM_IMAGE > /dev/null
+        if [[ $? -ne 0 ]]; then
+            echo "Failed to create qcow2 image"
+            exit 3
+        fi
+    fi
+fi
 
 # ContainsElement: checks if first parameter is among the array given as second parameter
 # returns 0 if the element is found in the list and 1 if not
