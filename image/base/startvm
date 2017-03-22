@@ -74,7 +74,7 @@ configureRootDisk() {
                 log "INFO" "Downloading $IMAGE_LOCATION"
 
                 tmpFile=$(echo "/tmp/"$(uuidgen))
-                curl -s $IMAGE_LOCATION -o $tmpFile
+                curl -L -s $IMAGE_LOCATION -o $tmpFile
 
                 calcedDigest=$(sha256sum $tmpFile | awk '{print $1}')
                 if [ "$IMAGE_SHA256_DIGEST" != "$calcedDigest" ]; then
