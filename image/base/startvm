@@ -34,20 +34,25 @@ log () {
   esac
 }
 
+configureRootDisk() {
+    if [ -e /dev/vm/root ]; then
+        KVM_BLK_OPTS="$KVM_RAW_BLK_OPTS"
+        KVM_IMAGE=/dev/vm/root
+        exit 0
+    fi
 
-
-# Create the qcow disk image on the Docker volume named /image, using
-# the compressed qcow image that came with Docker image as the base.
-# Docker volumes typically perform better than the file system for
-# Docker images (no need for overlay fs etc.)
-
-if [ -e /dev/vm/root ]; then
-    KVM_BLK_OPTS="$KVM_RAW_BLK_OPTS"
-    KVM_IMAGE=/dev/vm/root
-else
     if [[ $IMAGE_LOCATION == file://* ]]; then
         baseImage=${IMAGE_LOCATION/file:\/\//\/images}
     elif [[ $IMAGE_LOCATION == http* ]]; then
+        # Create the qcow disk image on the Docker volume named /image, using
+        # the compressed qcow image that came with Docker image as the base.
+        # Docker volumes typically perform better than the file system for
+        # Docker images (no need for overlay fs etc.)
+        if [ ! -d "/image" ]; then
+            echo "/image directory does not exist, failed to mount volume /image?"
+            exit 2
+        fi
+
         if [ -z "$IMAGE_SHA256_DIGEST" ]; then
             >&2 echo "IMAGE_SHA256_DIGEST environment variable must be set"
             exit 1
@@ -67,11 +72,11 @@ else
                 log "INFO" "Downloading $IMAGE_LOCATION"
 
                 tmpFile=$(echo "/tmp/"$(uuidgen))
-                wget $IMAGE_LOCATION -O $tmpFile
+                curl -s $IMAGE_LOCATION -o $tmpFile
 
                 calcedDigest=$(sha256sum $tmpFile | awk '{print $1}')
                 if [ "$IMAGE_SHA256_DIGEST" != "$calcedDigest" ]; then
-                    log "ERROR" "Calculated image digest $calcedDigest does not match provided digest [$IMAGE_SHA256_DIGEST]"
+                    log "ERROR" "Calculated image digest [$calcedDigest] does not match provided digest [$IMAGE_SHA256_DIGEST]"
                     exit 1
                 fi
                 mv $tmpFile $baseImage
@@ -84,11 +89,6 @@ else
         exit 1
     fi
 
-    if [ ! -d "/image" ]; then
-        echo "/image directory does not exist, failed to mount volume /image?"
-        exit 2
-    fi
-
     KVM_IMAGE=/image/sda.qcow2
     if [ ! -f "$KVM_IMAGE" ]; then
         qemu-img create -f qcow2 -b $baseImage $KVM_IMAGE > /dev/null
@@ -97,7 +97,7 @@ else
             exit 3
         fi
     fi
-fi
+}
 
 # ContainsElement: checks if first parameter is among the array given as second parameter
 # returns 0 if the element is found in the list and 1 if not
@@ -249,7 +249,7 @@ do
 local_ifaces=(${local_ifaces[@]//*$i*})
 done
 
-DEFAULT_ROUTE=$(ip route | grep default | awk '{print $3}')
+configureRootDisk
 
 configureNetworks
 
