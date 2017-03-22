@@ -8,7 +8,7 @@
 # If no arguments, the VM will lauch with 4 cores and 1GB of memory
 
 : ${RANCHER_DEBUG:='false'}
-[[ "${RANCHER_TRACE}" == "true" ]] && set -x
+[[ "${RANCHER_DEBUG}" == "true" ]] && set -x
 
 : ${LAUNCHER:='qemu-system-x86_64'}
 
@@ -60,7 +60,8 @@ configureRootDisk() {
             exit 1
         fi
 
-        baseImage=$(echo "/images/"$(echo "$IMAGE_LOCATION" | sha256sum | awk '{print $1}'))
+        imageLocationHash=$(echo "$IMAGE_LOCATION" | sha256sum | awk '{print $1}')
+        baseImage="/images/$imageLocationHash"
 
         # Touch so that we can get a read-only lock on it
         if [ ! -e "$baseImage" ]; then
@@ -73,7 +74,7 @@ configureRootDisk() {
             if [ ! -s "$baseImage" ]; then
                 log "INFO" "Downloading $IMAGE_LOCATION"
 
-                tmpFile=$(echo "/tmp/"$(uuidgen))
+                tmpFile="/tmp/$imageLocationHash"
                 curl -L -s $IMAGE_LOCATION -o $tmpFile
 
                 calcedDigest=$(sha256sum $tmpFile | awk '{print $1}')
