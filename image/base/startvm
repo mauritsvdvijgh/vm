@@ -22,17 +22,17 @@ KVM_ARGS=$@
 
 
 log() {
-  case "$1" in
-    INFO | WARNING | ERROR )
-      echo "$1: ${@:2}"
-      ;;
-    DEBUG)
-      [[ "${RANCHER_DEBUG}" == "true" ]] && echo "$1: ${@:2}"
-      ;;
-    *)
-      echo "-- $@"
-      ;;
-  esac
+    case "$1" in
+        INFO | WARNING | ERROR )
+            echo "$1: ${@:2}"
+            ;;
+        DEBUG)
+            [[ "${RANCHER_DEBUG}" == "true" ]] && echo "$1: ${@:2}"
+            ;;
+        *)
+            echo "-- $@"
+            ;;
+    esac
 }
 
 
@@ -107,41 +107,39 @@ configure_root_disk() {
 # returns 0 if the element is found in the list and 1 if not
 # usage: cotains_element $item $list
 cotains_element() {
-  local e
-  for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
-  return 1
+    local e
+    for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
+    return 1
 }
 
 
 # Generate random MAC address
 gen_mac() {
-  hexchars="0123456789ABCDEF"
-  end=$( for i in {1..8} ; do echo -n ${hexchars:$(( $RANDOM % 16 )):1} ; done | sed -e 's/\(..\)/:\1/g' )
-  echo "FE:05$end"
+    hexchars="0123456789ABCDEF"
+    end=$( for i in {1..8} ; do echo -n ${hexchars:$(( $RANDOM % 16 )):1} ; done | sed -e 's/\(..\)/:\1/g' )
+    echo "FE:05$end"
 }
 
 
 # atoi: Returns the integer representation of an IP arg, passed in ascii
 # dotted-decimal notation (x.x.x.x)
 atoi() {
-  IP=$1
-  IPnum=0
-  for (( i=0 ; i<4 ; ++i ))
-  do
-    ((IPnum+=${IP%%.*}*$((256**$((3-${i}))))))
-    IP=${IP#*.}
-  done
-  echo $IPnum
+    IP=$1
+    IPnum=0
+    for (( i=0 ; i<4 ; ++i )); do
+        ((IPnum+=${IP%%.*}*$((256**$((3-${i}))))))
+        IP=${IP#*.}
+    done
+    echo $IPnum
 }
 
 
-# itoa: returns the dotted-decimal ascii form of an IP arg passed in integer
-# format
+# itoa: returns the dotted-decimal ascii form of an IP arg passed in integer format
 itoa() {
-  echo -n $(($(($(($((${1}/256))/256))/256))%256)).
-  echo -n $(($(($((${1}/256))/256))%256)).
-  echo -n $(($((${1}/256))%256)).
-  echo $((${1}%256))
+    echo -n $(($(($(($((${1}/256))/256))/256))%256)).
+    echo -n $(($(($((${1}/256))/256))%256)).
+    echo -n $(($((${1}/256))%256)).
+    echo $((${1}%256))
 }
 
 
@@ -149,106 +147,105 @@ itoa() {
 # usage: generateNetDevName
 # returns: macvtapXXXXXX
 generate_netdev_names() {
-  devicetype=$1
+    devicetype=$1
 
-  local netdevinterfaces=($(ip link show | awk "/$devicetype/ { print \$2 }" | cut -d '@' -f 1 | tr -d :))
-  local randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1)
+    local netdevinterfaces=($(ip link show | awk "/$devicetype/ { print \$2 }" | cut -d '@' -f 1 | tr -d :))
+    local randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1)
 
-  # check if the device already exists and regenerate the name if so
-  while cotains_element "$devicetype$randomID" "${netdevinterfaces[@]}"; do randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1); done
+    # check if the device already exists and regenerate the name if so
+    while cotains_element "$devicetype$randomID" "${netdevinterfaces[@]}"; do randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1); done
 
-  echo "$randomID"
+    echo "$randomID"
 }
 
 
 setup_macvtap() {
-  local iface="$1"
-  local mode="$2"
-  local deviceID=$(generate_netdev_names $mode)
+    local iface="$1"
+    local mode="$2"
+    local deviceID=$(generate_netdev_names $mode)
 
-  vtapdev="macvtap${deviceID}"
-  until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
-    sleep 1
-  done
+    vtapdev="macvtap${deviceID}"
+    until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
+        sleep 1
+    done
 
-  ip link set $vtapdev address "$MAC"
-  ip link set $vtapdev up
+    ip link set $vtapdev address "$MAC"
+    ip link set $vtapdev up
 
-  # create dev file (there is no udev in container: need to be done manually)
-  IFS=: read major minor < <(cat /sys/devices/virtual/net/$vtapdev/tap*/dev)
-  mknod "/dev/$vtapdev" c $major $minor
+    # create dev file (there is no udev in container: need to be done manually)
+    IFS=: read major minor < <(cat /sys/devices/virtual/net/$vtapdev/tap*/dev)
+    mknod "/dev/$vtapdev" c $major $minor
 
-  ip address del "$IP/$CIDR" dev "$iface"
+    ip address del "$IP/$CIDR" dev "$iface"
 
-  echo $deviceID
+    echo $deviceID
 }
 
 
 # Setup macvtap device to connect later the VM
 configure_networks() {
-  local local_ifaces
-  local local_bridges
-  local i=0
-  local GATEWAY=$(ip r | grep default | awk '{print $3}')
-  local IP
+    local local_ifaces
+    local local_bridges
+    local i=0
+    local GATEWAY=$(ip r | grep default | awk '{print $3}')
+    local IP
 
-  # Get all interfaces:
-  local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
-  local_bridges=($(brctl show | tail -n +2 | awk '{print $1}'))
-  # Get non-bridge interfaces:
-  for i in "${local_bridges[@]}"; do
-      local_ifaces=(${local_ifaces[@]//*$i*})
-  done
+    # Get all interfaces:
+    local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
+    local_bridges=($(brctl show | tail -n +2 | awk '{print $1}'))
+    # Get non-bridge interfaces:
+    for i in "${local_bridges[@]}"; do
+        local_ifaces=(${local_ifaces[@]//*$i*})
+    done
 
-  for iface in "${local_ifaces[@]}"; do
+    for iface in "${local_ifaces[@]}"; do
+        IPs=$(ip address show dev $iface | grep inet | awk '/inet / { print $2 }' | cut -f1 -d/)
+        IPs=($IPs)
+        MAC=$(ip link show $iface | awk '/ether/ { print $2 }')
 
-    IPs=$(ip address show dev $iface | grep inet | awk '/inet / { print $2 }' | cut -f1 -d/)
-    IPs=($IPs)
-    MAC=$(ip link show $iface | awk '/ether/ { print $2 }')
+        # If the container has more than one IP configured in a given interface,
+        # the user can select which one to use.
+        # The SELECTED_NETWORK environment variable is used to select that IP.
+        # This env variable must be in the form IP/MASK (e.g. 1.2.3.4/24).
+        #
+        # If this env variable is not set, the IP to be given to the VM is
+        # the first in the list for that interface (default behaviour).
+        if ! [[ -z "$SELECTED_NETWORK" ]]; then
+            local given_ip given_mask
+            IFS=/ read given_ip given_mask <<< $SELECTED_NETWORK
+            local given_addr=$(atoi $given_ip)
+            local given_mask=$((0xffffffff << (32 - $given_mask) & 0xffffffff))
+            local given_broadcast=$((given_addr | ~given_mask & 0xffffffff))
+            local given_network=$((given_addr & given_mask))
 
-    # If the container has more than one IP configured in a given interface,
-    # the user can select which one to use.
-    # The SELECTED_NETWORK environment variable is used to select that IP.
-    # This env variable must be in the form IP/MASK (e.g. 1.2.3.4/24).
-    #
-    # If this env variable is not set, the IP to be given to the VM is
-    # the first in the list for that interface (default behaviour).
-    if ! [[ -z "$SELECTED_NETWORK" ]]; then
-      local given_ip given_mask
-      IFS=/ read given_ip given_mask <<< $SELECTED_NETWORK
-      local given_addr=$(atoi $given_ip)
-      local given_mask=$((0xffffffff << (32 - $given_mask) & 0xffffffff))
-      local given_broadcast=$((given_addr | ~given_mask & 0xffffffff))
-      local given_network=$((given_addr & given_mask))
-
-      for configured_ip in "${IPs[@]}"; do
-        local configured_ip=$(atoi $configured_ip)
-        if [[ $configured_ip -gt $given_network && $configured_ip -lt $given_broadcast ]]; then
-          IP=$(itoa $configured_ip)
-          log "INFO" "SELECTED_NETWORK ($SELECTED_NETWORK) found with ip $IP in $iface interface."
+            for configured_ip in "${IPs[@]}"; do
+                local configured_ip=$(atoi $configured_ip)
+                if [[ $configured_ip -gt $given_network && $configured_ip -lt $given_broadcast ]]; then
+                    IP=$(itoa $configured_ip)
+                    log "INFO" "SELECTED_NETWORK ($SELECTED_NETWORK) found with ip $IP in $iface interface."
+                fi
+            done
+            [[ -z "$IP" ]] && log "WARNING" "SELECTED_NETWORK ($SELECTED_NETWORK) not found in $iface interface."
+        else
+            IP=${IPs[0]}
         fi
-      done
-      [[ -z "$IP" ]] && log "WARNING" "SELECTED_NETWORK ($SELECTED_NETWORK) not found in $iface interface."
-    else
-      IP=${IPs[0]}
-    fi
 
-    local CIDR=$(ip address show dev $iface | awk "/inet $IP/ { print \$2 }" | cut -f2 -d/)
+        local CIDR=$(ip address show dev $iface | awk "/inet $IP/ { print \$2 }" | cut -f2 -d/)
 
-    # use container MAC address ($MAC) for tap device
-    # and generate a new one for the local interface
-    newMAC=$(gen_mac)
-    log "INFO" "Assigning container's original mac address $MAC to VM. Assigning new mac address to container: $newMAC"
-    ip link set $iface down
-    ip link set $iface address $newMAC
-    ip link set $iface up
+        # use container MAC address ($MAC) for tap device
+        # and generate a new one for the local interface
+        newMAC=$(gen_mac)
+        log "INFO" "Assigning container's original mac address $MAC to VM. Assigning new mac address to container: $newMAC"
+        ip link set $iface down
+        ip link set $iface address $newMAC
+        ip link set $iface up
 
-    deviceID=($(setup_macvtap $iface))
-    let fd=$i+3
-    KVM_NET_OPTS="$KVM_NET_OPTS -device virtio-net-pci,netdev=net$i,mac=$MAC -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
+        deviceID=($(setup_macvtap $iface))
+        let fd=$i+3
+        KVM_NET_OPTS="$KVM_NET_OPTS -device virtio-net-pci,netdev=net$i,mac=$MAC -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
 
-    let i++
-  done
+        let i++
+    done
 }
 
 wait_for_metadata() {
@@ -272,37 +269,37 @@ wait_for_metadata() {
 }
 
 fetch_rancher() {
-	name=$1
-	file=$2
+    name=$1
+    file=$2
 
-	curl -s http://rancher-metadata/2015-07-25/self/container/labels/$name > $file
-	if [ $? -ne 0 ]; then
-		return
-	fi
-	content=`cat $file`
-	if [[ $content == "Not found"* ]]; then
-		return
-	fi
-	echo $file
-	return
+    curl -s http://rancher-metadata/2015-07-25/self/container/labels/$name > $file
+    if [ $? -ne 0 ]; then
+        return
+    fi
+    content=`cat $file`
+    if [[ $content == "Not found"* ]]; then
+        return
+    fi
+    echo $file
+    return
 }
 
 
 fetch_metadata() {
-	fetch_rancher io.rancher.vm.metadata metadata.rancher
-	return
+    fetch_rancher io.rancher.vm.metadata metadata.rancher
+    return
 }
 
 
 fetch_os_metadata() {
-	fetch_rancher io.rancher.vm.os_metadata os_metadata.rancher
-	return
+    fetch_rancher io.rancher.vm.os_metadata os_metadata.rancher
+    return
 }
 
 
 fetch_userdata() {
-	fetch_rancher io.rancher.vm.userdata userdata.rancher
-	return
+    fetch_rancher io.rancher.vm.userdata userdata.rancher
+    return
 }
 
 
@@ -311,64 +308,64 @@ configure_cloud_init() {
     wait_for_metadata
 
     os_metadata=`fetch_os_metadata`
-	if [ ! -f $os_metadata ]; then
-		os_metadata=""
-	fi
-	metadata=`fetch_metadata`
-	if [ ! -f $metadata ]; then
-		metadata=""
-	fi
-	userdata=`fetch_userdata`
-	if [ ! -f $userdata ]; then
-		userdata=""
-	fi
+    if [ ! -f $os_metadata ]; then
+        os_metadata=""
+    fi
+    metadata=`fetch_metadata`
+    if [ ! -f $metadata ]; then
+        metadata=""
+    fi
+    userdata=`fetch_userdata`
+    if [ ! -f $userdata ]; then
+        userdata=""
+    fi
 
-	if [ "$metadata" == "" -a "$userdata" == "" -a "$os_metadata" == "" ]; then
-		return
-	fi
-	TMPDIR=`mktemp -d -t ranchervm.XXXXXX`
-	if [ $? -ne 0 ]; then
-		echo Fail to create temporaily directory
-		exit 1
-	fi
+    if [ "$metadata" == "" -a "$userdata" == "" -a "$os_metadata" == "" ]; then
+        return
+    fi
+    TMPDIR=`mktemp -d -t ranchervm.XXXXXX`
+    if [ $? -ne 0 ]; then
+        echo Fail to create temporaily directory
+        exit 1
+    fi
 
-	dirs=("/openstack/2012-08-10/" "/openstack/latest/" "/ec2/2009-04-04/" "/ec2/latest/")
-	for i in ${dirs[@]}; do
-		dir=$TMPDIR$i
-		metadatasrc=$metadata
-		metafile=$dir"meta-data.json"
-		userfile=$dir"user_data"
-		if [[ $i == "/openstack"* ]]; then
-			metadatasrc=$os_metadata
+    dirs=("/openstack/2012-08-10/" "/openstack/latest/" "/ec2/2009-04-04/" "/ec2/latest/")
+    for i in ${dirs[@]}; do
+        dir=$TMPDIR$i
+        metadatasrc=$metadata
+        metafile=$dir"meta-data.json"
+        userfile=$dir"user_data"
+        if [[ $i == "/openstack"* ]]; then
+            metadatasrc=$os_metadata
             metafile=$dir"meta_data.json"
-		fi
+        fi
 
         mkdir -p $dir
 
         if [[ -e "$metadatasrc" ]]; then
-			cp $metadatasrc $metafile
-		fi
+            cp $metadatasrc $metafile
+        fi
 
         if [[ -e "$userdata" ]]; then
-			cp $userdata $userfile
-		fi
-	done
+            cp $userdata $userfile
+        fi
+    done
 
-	iso="cloud-drive.iso"
-	genisoimage -allow-lowercase -allow-multidot -J -l -o $iso -publisher Rancher -quiet -r -V config-2 $TMPDIR
-	if [ $? -ne 0 ]; then
-		echo Fail to create cloud-drive ISO image for cloud-init
-		exit 1
-	fi
+    iso="cloud-drive.iso"
+    genisoimage -allow-lowercase -allow-multidot -J -l -o $iso -publisher Rancher -quiet -r -V config-2 $TMPDIR
+    if [ $? -ne 0 ]; then
+        echo Fail to create cloud-drive ISO image for cloud-init
+        exit 1
+    fi
 
     if [[ -n "$iso" ]]; then
         KVM_BLK_OPTS=$KVM_BLK_OPTS" -cdrom $iso"
     fi
 }
 
+# If /vm does not exist, we still proceed with running KVM. We just
+# won't get a VNC console socket.
 configure_vnc() {
-    # If /vm does not exist, we still proceed with running KVM. We just
-    # won't get a VNC console socket.
     if [ -d /vm ]; then
         DOCKERID=`cat /proc/self/cgroup | grep docker | awk -F/ '{print $NF}' | cut -f 2 -d - | cut -f 1 -d . | head -1`
         mkdir -p /vm/$DOCKERID
@@ -377,8 +374,8 @@ configure_vnc() {
     fi
 }
 
+# Enable KVM acceleration if the host supports it
 configure_acceleration() {
-    #enable KVM acceleration if the host supports it
     if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
       log "INFO" "KVM acceleration enabled"
       KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm"
