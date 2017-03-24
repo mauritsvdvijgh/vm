@@ -36,7 +36,7 @@ log() {
 }
 
 
-configureRootDisk() {
+configure_root_disk() {
     if [ -e /dev/vm/root ]; then
         KVM_BLK_OPTS="$KVM_RAW_BLK_OPTS"
         KVM_IMAGE=/dev/vm/root
@@ -105,8 +105,8 @@ configureRootDisk() {
 
 # ContainsElement: checks if first parameter is among the array given as second parameter
 # returns 0 if the element is found in the list and 1 if not
-# usage: containsElement $item $list
-containsElement() {
+# usage: cotains_element $item $list
+cotains_element() {
   local e
   for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
   return 1
@@ -114,7 +114,7 @@ containsElement() {
 
 
 # Generate random MAC address
-genMAC() {
+gen_mac() {
   hexchars="0123456789ABCDEF"
   end=$( for i in {1..8} ; do echo -n ${hexchars:$(( $RANDOM % 16 )):1} ; done | sed -e 's/\(..\)/:\1/g' )
   echo "FE:05$end"
@@ -148,23 +148,23 @@ itoa() {
 # generates unused, random names for net devices
 # usage: generateNetDevName
 # returns: macvtapXXXXXX
-generateNetdevNames() {
+generate_netdev_names() {
   devicetype=$1
 
   local netdevinterfaces=($(ip link show | awk "/$devicetype/ { print \$2 }" | cut -d '@' -f 1 | tr -d :))
   local randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1)
 
   # check if the device already exists and regenerate the name if so
-  while containsElement "$devicetype$randomID" "${netdevinterfaces[@]}"; do randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1); done
+  while cotains_element "$devicetype$randomID" "${netdevinterfaces[@]}"; do randomID=$(cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 6 | head -n 1); done
 
   echo "$randomID"
 }
 
 
-setupMacvtap() {
+setup_macvtap() {
   local iface="$1"
   local mode="$2"
-  local deviceID=$(generateNetdevNames $mode)
+  local deviceID=$(generate_netdev_names $mode)
 
   vtapdev="macvtap${deviceID}"
   until $(ip link add link $iface name $vtapdev type macvtap mode bridge); do
@@ -185,11 +185,20 @@ setupMacvtap() {
 
 
 # Setup macvtap device to connect later the VM
-configureNetworks() {
+configure_networks() {
+  local local_ifaces
+  local local_bridges
   local i=0
-
   local GATEWAY=$(ip r | grep default | awk '{print $3}')
   local IP
+
+  # Get all interfaces:
+  local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
+  local_bridges=($(brctl show | tail -n +2 | awk '{print $1}'))
+  # Get non-bridge interfaces:
+  for i in "${local_bridges[@]}"; do
+      local_ifaces=(${local_ifaces[@]//*$i*})
+  done
 
   for iface in "${local_ifaces[@]}"; do
 
@@ -228,13 +237,13 @@ configureNetworks() {
 
     # use container MAC address ($MAC) for tap device
     # and generate a new one for the local interface
-    newMAC=$(genMAC)
+    newMAC=$(gen_mac)
     log "INFO" "Assigning container's original mac address $MAC to VM. Assigning new mac address to container: $newMAC"
     ip link set $iface down
     ip link set $iface address $newMAC
     ip link set $iface up
 
-    deviceID=($(setupMacvtap $iface))
+    deviceID=($(setup_macvtap $iface))
     let fd=$i+3
     KVM_NET_OPTS="$KVM_NET_OPTS -device virtio-net-pci,netdev=net$i,mac=$MAC -netdev tap,id=net$i,vhost=on,fd=$fd ${fd}<>/dev/macvtap$deviceID"
 
@@ -242,35 +251,151 @@ configureNetworks() {
   done
 }
 
+wait_for_metadata() {
+    if [ -z "$STACK_NAME" ]; then
+        counter=0
+        printf 'Waiting for metadata'
+        until $(curl --output /dev/null --silent --head --fail http://rancher-metadata/2015-07-25/self/container/labels/io.rancher.container.name); do
+            printf '.'
+            sleep 3
+            counter=$((counter + 1))
+            if [ "$counter" -gt 10 ]; then
+                echo
+                echo "Could not reach metadata." >&2
+                exit 1
+            fi
+        done
+        echo
+    else
+        echo "STACK_NAME env var is set. Will look for all settings as environment variables. Not waiting for metadata."
+    fi
+}
+
+fetch_rancher() {
+	name=$1
+	file=$2
+
+	curl -s http://rancher-metadata/2015-07-25/self/container/labels/$name > $file
+	if [ $? -ne 0 ]; then
+		return
+	fi
+	content=`cat $file`
+	if [[ $content == "Not found"* ]]; then
+		return
+	fi
+	echo $file
+	return
+}
+
+
+fetch_metadata() {
+	fetch_rancher io.rancher.vm.metadata metadata.rancher
+	return
+}
+
+
+fetch_os_metadata() {
+	fetch_rancher io.rancher.vm.os_metadata os_metadata.rancher
+	return
+}
+
+
+fetch_userdata() {
+	fetch_rancher io.rancher.vm.userdata userdata.rancher
+	return
+}
+
+
+# get metadata and create cloud drive v2 for cloud-init
+configure_cloud_init() {
+    wait_for_metadata
+
+    os_metadata=`fetch_os_metadata`
+	if [ ! -f $os_metadata ]; then
+		os_metadata=""
+	fi
+	metadata=`fetch_metadata`
+	if [ ! -f $metadata ]; then
+		metadata=""
+	fi
+	userdata=`fetch_userdata`
+	if [ ! -f $userdata ]; then
+		userdata=""
+	fi
+
+	if [ "$metadata" == "" -a "$userdata" == "" -a "$os_metadata" == "" ]; then
+		return
+	fi
+	TMPDIR=`mktemp -d -t ranchervm.XXXXXX`
+	if [ $? -ne 0 ]; then
+		echo Fail to create temporaily directory
+		exit 1
+	fi
+
+	dirs=("/openstack/2012-08-10/" "/openstack/latest/" "/ec2/2009-04-04/" "/ec2/latest/")
+	for i in ${dirs[@]}; do
+		dir=$TMPDIR$i
+		metadatasrc=$metadata
+		metafile=$dir"meta-data.json"
+		userfile=$dir"user_data"
+		if [[ $i == "/openstack"* ]]; then
+			metadatasrc=$os_metadata
+            metafile=$dir"meta_data.json"
+		fi
+
+        mkdir -p $dir
+
+        if [[ -e "$metadatasrc" ]]; then
+			cp $metadatasrc $metafile
+		fi
+
+        if [[ -e "$userdata" ]]; then
+			cp $userdata $userfile
+		fi
+	done
+
+	iso="cloud-drive.iso"
+	genisoimage -allow-lowercase -allow-multidot -J -l -o $iso -publisher Rancher -quiet -r -V config-2 $TMPDIR
+	if [ $? -ne 0 ]; then
+		echo Fail to create cloud-drive ISO image for cloud-init
+		exit 1
+	fi
+
+    if [[ -n "$iso" ]]; then
+        KVM_BLK_OPTS=$KVM_BLK_OPTS" -cdrom $iso"
+    fi
+}
+
+configure_vnc() {
+    # If /vm does not exist, we still proceed with running KVM. We just
+    # won't get a VNC console socket.
+    if [ -d /vm ]; then
+        DOCKERID=`cat /proc/self/cgroup | grep docker | awk -F/ '{print $NF}' | cut -f 2 -d - | cut -f 1 -d . | head -1`
+        mkdir -p /vm/$DOCKERID
+        VNC="-vnc unix:/vm/$DOCKERID/vnc"
+        log "INFO" "VNC server will listen on Unix socket /vm/$DOCKERID/vnc"
+    fi
+}
+
+configure_acceleration() {
+    #enable KVM acceleration if the host supports it
+    if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
+      log "INFO" "KVM acceleration enabled"
+      KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm"
+    fi
+}
+
 # MAIN
 
-#enable KVM acceleration if the host supports it
-if [[ $(grep -e vmx -e svm /proc/cpuinfo) ]]; then
-  log "INFO" "KVM acceleration enabled"
-  KVM_OPTS="$KVM_OPTS -enable-kvm -machine accel=kvm"
-fi
+configure_cloud_init
 
-# Get all interfaces:
-local_ifaces=($(ip link show | grep -v noop | grep state | grep -v LOOPBACK | awk '{print $2}' | tr -d : | sed 's/@.*$//'))
-local_bridges=($(brctl show | tail -n +2 | awk '{print $1}'))
-# Get non-bridge interfaces:
-for i in "${local_bridges[@]}"
-do
-local_ifaces=(${local_ifaces[@]//*$i*})
-done
+configure_root_disk
 
-configureRootDisk
+configure_networks
 
-configureNetworks
+configure_acceleration
 
-# If /vm does not exist, we still proceed with running KVM. We just
-# won't get a VNC console socket.
-if [ -d /vm ]; then
-    DOCKERID=`cat /proc/self/cgroup | grep docker | awk -F/ '{print $NF}' | cut -f 2 -d - | cut -f 1 -d . | head -1`
-    mkdir -p /vm/$DOCKERID
-    VNC="-vnc unix:/vm/$DOCKERID/vnc"
-    echo VNC server will listen on Unix socket /vm/$DOCKERID/vnc
-fi
+configure_vnc
 
 log "INFO" "$LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $KVM_ARGS $KVM_NET_OPTS"
 eval exec $LAUNCHER $VNC $KVM_BLK_OPTS $KVM_OPTS $KVM_CPU_OPTS $KVM_ARGS $KVM_NET_OPTS
